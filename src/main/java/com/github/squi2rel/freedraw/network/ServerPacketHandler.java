@@ -28,7 +28,7 @@ public class ServerPacketHandler {
             case NEW_PATH -> {
                 UUID old = IOUtil.readUUID(buf);
                 UUID uuid = UUID.randomUUID();
-                BrushPath path = new BrushPath(uuid, player.getWorld().getRegistryKey().getValue().toString(), IOUtil.readVec3d(buf), buf.readInt());
+                BrushPath path = new BrushPath(uuid, player.getEntityWorld().getRegistryKey().getValue().toString(), IOUtil.readVec3d(buf), buf.readInt());
                 config.paths.put(uuid, path);
                 sendTo(player, newPath(old, uuid, path.color));
             }
@@ -85,7 +85,7 @@ public class ServerPacketHandler {
     }
 
     private static void broadcast(ServerPlayerEntity pos, byte[] data) {
-        for (ServerPlayerEntity player : PlayerLookup.around(pos.getServerWorld(), pos.getPos(), config.broadcastRange)) {
+        for (ServerPlayerEntity player : PlayerLookup.around(pos.getEntityWorld(), pos.getEntityPos(), config.broadcastRange)) {
             if (player == pos) continue;
             sendTo(player, data);
         }

@@ -52,8 +52,8 @@ public class DataHolder {
         PlayerManager pm = server.getPlayerManager();
         for (UUID uuid : players.keySet()) {
             ServerPlayerEntity player = pm.getPlayer(uuid);
-            Vec3d pos = Objects.requireNonNull(player).getPos();
-            paths.update(player.getUuid(), player.getWorld().getRegistryKey().getValue().toString(), pos.x, pos.y, pos.z);
+            Vec3d pos = Objects.requireNonNull(player).getEntityPos();
+            paths.update(player.getUuid(), player.getEntityWorld().getRegistryKey().getValue().toString(), pos.x, pos.y, pos.z);
         }
     }
 

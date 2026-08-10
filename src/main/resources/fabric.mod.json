@@ -28,9 +28,10 @@
 			"environment": "client"
 		}
 	],
+	"accessWidener": "freedraw.accesswidener",
 	"depends": {
-		"fabricloader": ">=0.16.13",
-		"minecraft": "~1.21.4",
+		"fabricloader": ">=0.19.3",
+		"minecraft": "~1.21.11",
 		"java": ">=21",
 		"fabric-api": "*"
 	},

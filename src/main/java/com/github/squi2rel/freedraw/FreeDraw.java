@@ -60,7 +60,7 @@ public class FreeDraw implements ModInitializer {
 										player.sendMessage(createRainbowText("Current color: RAINBOW", 0.8f, 1.0f));
 										return 1;
 									}
-									DyeColor dyeColor = DyeColor.byName(str, null);
+									DyeColor dyeColor = DyeColor.byId(str, null);
 									int color;
 									if (dyeColor != null) {
 										color = dyeColor.getSignColor() | 0xFF000000;

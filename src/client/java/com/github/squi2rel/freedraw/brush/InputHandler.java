@@ -3,9 +3,9 @@ package com.github.squi2rel.freedraw.brush;
 import com.github.squi2rel.freedraw.FreeDrawClient;
 import com.github.squi2rel.freedraw.network.ClientPacketHandler;
 import com.github.squi2rel.freedraw.vivecraft.Vivecraft;
-import net.fabricmc.fabric.api.client.rendering.v1.WorldRenderContext;
-import net.fabricmc.fabric.api.client.rendering.v1.WorldRenderEvents;
+import net.fabricmc.fabric.api.client.rendering.v1.world.WorldRenderEvents;
 import net.minecraft.client.MinecraftClient;
+import net.minecraft.client.render.Camera;
 import net.minecraft.component.DataComponentTypes;
 import net.minecraft.component.type.CustomModelDataComponent;
 import net.minecraft.item.Item;
@@ -29,7 +29,7 @@ public class InputHandler {
         WorldRenderEvents.BEFORE_ENTITIES.register(ctx -> {
             if (!FreeDrawClient.connected) return;
             MinecraftClient client = MinecraftClient.getInstance();
-            if (client.player == null || client.world == null || ctx.camera().getFocusedEntity() != client.player || !isVRMode() && ctx.camera().isThirdPerson()) return;
+            if (client.player == null || client.world == null || camera().getFocusedEntity() != client.player || !isVRMode() && camera().isThirdPerson()) return;
             if (client.options.useKey.isPressed()) {
                 for (Hand hand : Hand.values()) {
                     ItemStack item = client.player.getStackInHand(hand);
@@ -37,10 +37,10 @@ public class InputHandler {
                     boolean isEraser = !isBrush && checkItem(item, eraserItem, eraserId, eraserId);
                     if (!isBrush && !isEraser) continue;
                     if (isBrush) {
-                        updateBrush(ctx, hand);
+                        updateBrush(hand);
                         break;
                     } else {
-                        updateEraser(ctx, hand);
+                        updateEraser(hand);
                     }
                 }
             } else {
@@ -59,7 +59,7 @@ public class InputHandler {
         });
     }
 
-    private static void updateBrush(WorldRenderContext ctx, Hand hand) {
+    private static void updateBrush(Hand hand) {
         if (drawing && currentPath == null) return;
         Vec3d drawPoint;
         if (isVRMode()) {
@@ -67,8 +67,8 @@ public class InputHandler {
             drawPoint = Vivecraft.getHandPosition(hand).add(off.x, off.y, off.z);
             if (drawPoint == null) return;
         } else {
-            Vec3d eyePos = ctx.camera().getPos();
-            Vector3f lookVec = new Vector3f(0, 0, -1).rotate(ctx.camera().getRotation()).mul(desktopRange);
+            Vec3d eyePos = camera().getCameraPos();
+            Vector3f lookVec = new Vector3f(0, 0, -1).rotate(camera().getRotation()).mul(desktopRange);
             drawPoint = eyePos.add(lookVec.x, lookVec.y, lookVec.z);
         }
         if (prevPos != null) {
@@ -88,15 +88,19 @@ public class InputHandler {
         return Vivecraft.loaded && Vivecraft.isVRActive();
     }
 
-    private static void updateEraser(WorldRenderContext ctx, Hand hand) {
+    private static Camera camera() {
+        return MinecraftClient.getInstance().gameRenderer.getCamera();
+    }
+
+    private static void updateEraser(Hand hand) {
         Vec3d start, end;
         if (isVRMode()) {
             start = Vivecraft.getHandPosition(hand);
             Vector3f off = Vivecraft.getHandDirection(hand).rotate(eraserQuat).mul(eraserLength);
             end = start.add(off.x, off.y, off.z);
         } else {
-            start = ctx.camera().getPos();
-            Vector3f lookVec = new Vector3f(0, 0, -1).rotate(ctx.camera().getRotation()).mul(desktopRange);
+            start = camera().getCameraPos();
+            Vector3f lookVec = new Vector3f(0, 0, -1).rotate(camera().getRotation()).mul(desktopRange);
             end = start.add(lookVec.x, lookVec.y, lookVec.z);
         }
         outer: for (ClientBrushPath path : paths.values()) {

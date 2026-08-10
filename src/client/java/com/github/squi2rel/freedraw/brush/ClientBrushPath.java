@@ -5,7 +5,6 @@ import com.github.squi2rel.freedraw.FreeDrawClient;
 import com.github.squi2rel.freedraw.network.ClientPacketHandler;
 import com.github.squi2rel.freedraw.render.*;
 import net.minecraft.client.MinecraftClient;
-import net.minecraft.client.gl.VertexBuffer;
 import net.minecraft.text.Text;
 import net.minecraft.util.Formatting;
 import net.minecraft.util.math.Vec3d;
@@ -24,8 +23,6 @@ public class ClientBrushPath extends BrushPath {
     public int lastIndex = 0;
     public boolean created = false;
 
-    public DirtyBuffer dynamicBuffer;
-
 
     public ClientBrushPath(UUID uuid, Vec3d offset, int color, boolean finalized) {
         super(uuid, getWorldName(), new Vector3d(offset.x, offset.y, offset.z), color);
@@ -38,7 +35,7 @@ public class ClientBrushPath extends BrushPath {
     }
 
     private static String getWorldName() {
-        return Objects.requireNonNull(MinecraftClient.getInstance().player).getWorld().getRegistryKey().getValue().toString();
+        return Objects.requireNonNull(MinecraftClient.getInstance().player).getEntityWorld().getRegistryKey().getValue().toString();
     }
 
     private static void actionBar(int limit, int s) {
@@ -69,7 +66,7 @@ public class ClientBrushPath extends BrushPath {
         NodeGroup group = generateNodes(list, nodes);
         if (group.nodes.isEmpty()) return;
 
-        VertexBuffer baked = PathRenderer.bake(group.nodes, bakeState == null, finalized);
+        float[] baked = PathRenderer.bake(group.nodes, bakeState == null, finalized);
 
         if (bakeState == null) bakeState = new BakeState();
         bakeState.lastBakedTangent.set(group.lastTangent);
@@ -199,7 +196,6 @@ public class ClientBrushPath extends BrushPath {
 
     public void remove() {
         closeBaked();
-        if (dynamicBuffer != null) dynamicBuffer.remove(this);
     }
 
     private static class BakeState {
