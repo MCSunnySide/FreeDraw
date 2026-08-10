@@ -92,21 +92,10 @@ public class FreeDrawPlugin extends JavaPlugin implements Listener, PluginMessag
     @Override
     public void onPluginMessageReceived(String channel, Player player, byte[] message) {
         if (!CHANNEL.equals(channel)) return;
-        FreeDrawPlugin.LOGGER.info("C2S from " + player.getName() + ": " + message.length + " bytes, hex=" + hex(message, 48));
         try {
             PacketHandler.handle(player, PacketBuf.wrapped(message));
         } catch (Exception e) {
             player.kickPlayer("FreeDraw protocol error: " + e);
         }
-    }
-
-    /** First n bytes as hex, for diagnosing proxy truncation/mangling. */
-    static String hex(byte[] bytes, int n) {
-        StringBuilder sb = new StringBuilder();
-        int limit = Math.min(n, bytes.length);
-        for (int i = 0; i < limit; i++) {
-            sb.append(String.format("%02X", bytes[i]));
-        }
-        return sb.toString();
     }
 }

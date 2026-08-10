@@ -70,9 +70,7 @@ public class DataHolder {
     }
 
     public static void onPlayerJoin(Player player) {
-        byte[] cfg = PacketHandler.config(FreeDrawPlugin.version, config);
-        FreeDrawPlugin.LOGGER.info("Sending FreeDraw config to " + player.getName() + " (server version: " + FreeDrawPlugin.version + "), " + cfg.length + " bytes, hex=" + FreeDrawPlugin.hex(cfg, 48));
-        PacketHandler.sendTo(player, cfg);
+        PacketHandler.sendTo(player, PacketHandler.config(FreeDrawPlugin.version, config));
         PacketHandler.sendTo(player, PacketHandler.maxPoints(config.maxPoints));
     }
 
