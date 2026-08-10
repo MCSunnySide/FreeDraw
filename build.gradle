@@ -39,6 +39,11 @@ loom {
 		}
 	}
 
+	runs {
+		client {
+			programArgs "--username", "uoqoerhew"
+		}
+	}
 }
 
 dependencies {

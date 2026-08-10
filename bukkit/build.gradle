@@ -1,0 +1,50 @@
+plugins {
+    id 'java'
+    // Bundles + relocates JOML (used for Vector3f/Vector3d/Quaternionf) into the plugin jar
+    id 'com.gradleup.shadow' version '8.3.5'
+}
+
+group = 'com.github.squi2rel'
+version = project.plugin_version
+
+base {
+    archivesName = 'freedraw-bukkit'
+}
+
+repositories {
+    mavenCentral()
+    maven {
+        name = 'PaperMC'
+        url = 'https://repo.papermc.io/repository/maven-public/'
+    }
+}
+
+dependencies {
+    compileOnly 'io.papermc.paper:paper-api:1.21.4-R0.1-SNAPSHOT'
+
+    // Same vector/quaternion math library that the Fabric mod uses (bundled by Minecraft there)
+    implementation 'org.joml:joml:1.10.8'
+}
+
+java {
+    toolchain {
+        languageVersion = JavaLanguageVersion.of(project.java_version as int)
+    }
+}
+
+processResources {
+    inputs.property 'version', project.version
+    filesMatching('plugin.yml') {
+        expand 'version': project.version
+    }
+}
+
+shadowJar {
+    archiveClassifier.set('')
+    // Avoid clashing with a JOML version that a server may already ship
+    relocate 'org.joml', 'com.github.squi2rel.freedraw.bukkit.lib.joml'
+}
+
+tasks.named('build') {
+    dependsOn tasks.named('shadowJar')
+}

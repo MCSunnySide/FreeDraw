@@ -1,0 +1,26 @@
+name: FreeDraw
+version: ${version}
+main: com.github.squi2rel.freedraw.bukkit.FreeDrawPlugin
+api-version: 1.21
+description: Bukkit server-side implementation of FreeDraw (in-world brush & eraser) for compatibility with the FreeDraw Fabric client mod.
+authors:
+  - squi2rel
+website: https://github.com/squi2rel/FreeDraw
+
+commands:
+  drawcolor:
+    description: Set your drawing color
+    usage: /drawcolor <color|rainbow>
+    permission: freedraw.drawcolor
+  freedraw:
+    description: FreeDraw admin commands
+    usage: /freedraw <reload|save|clear [confirm]>
+    permission: freedraw.admin
+
+permissions:
+  freedraw.drawcolor:
+    description: Allows using /drawcolor
+    default: true
+  freedraw.admin:
+    description: Allows using /freedraw admin commands
+    default: op
