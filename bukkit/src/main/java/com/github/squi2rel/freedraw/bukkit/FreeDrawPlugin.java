@@ -64,6 +64,7 @@ public class FreeDrawPlugin extends JavaPlugin implements Listener, PluginMessag
     @Override
     public void onDisable() {
         DataHolder.save();
+        if (DataHolder.db != null) DataHolder.db.close();
         if (tickTask != -1) getServer().getScheduler().cancelTask(tickTask);
         getServer().getMessenger().unregisterIncomingPluginChannel(this, CHANNEL);
         getServer().getMessenger().unregisterOutgoingPluginChannel(this, CHANNEL);

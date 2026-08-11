@@ -1,37 +1,30 @@
 package com.github.squi2rel.freedraw.bukkit;
 
 import com.github.squi2rel.freedraw.bukkit.brush.BrushPath;
-import com.github.squi2rel.freedraw.bukkit.network.IOUtil;
+import com.github.squi2rel.freedraw.bukkit.database.Database;
 import com.github.squi2rel.freedraw.bukkit.network.PacketHandler;
 import com.google.gson.Gson;
 import org.bukkit.Bukkit;
 import org.bukkit.Location;
 import org.bukkit.entity.Player;
-import org.joml.Vector3f;
 
-import java.io.BufferedInputStream;
-import java.io.BufferedOutputStream;
-import java.io.DataInputStream;
-import java.io.DataOutputStream;
-import java.io.File;
-import java.io.FileInputStream;
-import java.io.FileOutputStream;
 import java.io.IOException;
 import java.nio.file.Files;
 import java.nio.file.Path;
 import java.util.HashMap;
 import java.util.Map;
 import java.util.UUID;
-import java.util.zip.DeflaterOutputStream;
-import java.util.zip.InflaterInputStream;
 
 /**
- * Config/data persistence and player lifecycle handling.
- * Mirrors {@code com.github.squi2rel.freedraw.DataHolder}.
+ * Config/persistence and player lifecycle handling.
+ *
+ * <p>Path data and action logs are stored in an embedded SQLite database
+ * ({@link Database}); all writes are asynchronous so the server thread never
+ * blocks on disk I/O. The old {@code data.bin} format is no longer used.</p>
  */
 public class DataHolder {
     public static Path configPath;
-    public static File pointsPath;
+    public static Database db;
     public static ServerConfig config;
     public static RegionManager paths;
     /** Players that have sent their CONFIG (version) packet, i.e. FreeDraw clients. */
@@ -41,9 +34,30 @@ public class DataHolder {
         configPath = FreeDrawPlugin.instance.getDataFolder().toPath().resolve("config.json");
         config = loadConfig(ServerConfig.class, configPath);
         paths = new RegionManager(config.broadcastRange);
-        pointsPath = FreeDrawPlugin.instance.getDataFolder().toPath().resolve("data.bin").toFile();
+
+        // Close any previous database instance first (reload path).
+        if (db != null) {
+            db.close();
+            db = null;
+        }
+        db = new Database(FreeDrawPlugin.instance.getDataFolder().toPath().resolve("freedraw.db").toFile());
+        db.open();
+
+        // Startup load is synchronous on purpose: paths must be in memory before
+        // players can see them. Runtime writes are fully async.
         HashMap<UUID, BrushPath> map = new HashMap<>();
-        loadPoints(map);
+        for (BrushPath path : db.loadAllPaths()) {
+            map.put(path.uuid, path);
+        }
+        if (map.isEmpty()) {
+            // One-time migration from the legacy data.bin format (if present).
+            Map<UUID, BrushPath> legacy = migrateLegacyDataBin();
+            if (!legacy.isEmpty()) {
+                map.putAll(legacy);
+                for (BrushPath path : legacy.values()) db.savePath(path);
+                FreeDrawPlugin.LOGGER.info("Migrated " + legacy.size() + " paths from legacy data.bin into SQLite");
+            }
+        }
         config.paths = map;
         long realPoints = 0, points = 0;
         for (BrushPath path : map.values()) {
@@ -55,8 +69,9 @@ public class DataHolder {
     }
 
     public static void save() {
-        savePoints(config.paths);
+        // Paths are persisted incrementally in the DB; config is saved here.
         saveConfig(config, configPath);
+        if (db != null) db.flushAsync();
     }
 
     /** Called once per server tick; keeps region sync in step with player movement. */
@@ -79,40 +94,18 @@ public class DataHolder {
         players.remove(player.getUniqueId());
     }
 
-    public static void savePoints(Map<UUID, BrushPath> map) {
-        try (DataOutputStream out = new DataOutputStream(new DeflaterOutputStream(new BufferedOutputStream(new FileOutputStream(pointsPath))))) {
-            out.writeInt(map.size());
-            for (Map.Entry<UUID, BrushPath> entry : map.entrySet()) {
-                UUID uuid = entry.getKey();
-                BrushPath path = entry.getValue();
-                out.writeLong(uuid.getMostSignificantBits());
-                out.writeLong(uuid.getLeastSignificantBits());
-                out.writeUTF(path.world);
-                IOUtil.writeVec3d(out, path.offset);
-                out.writeInt(path.color);
-                out.writeFloat(path.minX);
-                out.writeFloat(path.minY);
-                out.writeFloat(path.minZ);
-                out.writeFloat(path.maxX);
-                out.writeFloat(path.maxY);
-                out.writeFloat(path.maxZ);
-                out.writeInt(path.size);
-                out.writeInt(path.points.size());
-                for (Vector3f point : path.points) {
-                    IOUtil.writeVec3f(out, point);
-                }
-            }
-        } catch (Exception e) {
-            throw new RuntimeException(e);
-        }
-    }
-
-    public static void loadPoints(Map<UUID, BrushPath> map) {
-        try (DataInputStream in = new DataInputStream(new InflaterInputStream(new BufferedInputStream(new FileInputStream(pointsPath))))) {
+    /** Reads the legacy data.bin format (pre-SQLite) and returns the stored paths. */
+    private static Map<UUID, BrushPath> migrateLegacyDataBin() {
+        java.io.File file = FreeDrawPlugin.instance.getDataFolder().toPath().resolve("data.bin").toFile();
+        if (!file.exists()) return Map.of();
+        Map<UUID, BrushPath> map = new HashMap<>();
+        try (java.io.DataInputStream in = new java.io.DataInputStream(
+                new java.util.zip.InflaterInputStream(new java.io.BufferedInputStream(new java.io.FileInputStream(file))))) {
             int size = in.readInt();
             for (int i = 0; i < size; i++) {
                 UUID uuid = new UUID(in.readLong(), in.readLong());
-                BrushPath path = new BrushPath(uuid, in.readUTF(), IOUtil.readVec3d(in), in.readInt());
+                BrushPath path = new BrushPath(uuid, in.readUTF(),
+                        new org.joml.Vector3d(in.readDouble(), in.readDouble(), in.readDouble()), in.readInt());
                 path.finalized = true;
                 path.minX = in.readFloat();
                 path.minY = in.readFloat();
@@ -124,12 +117,14 @@ public class DataHolder {
                 int points = in.readInt();
                 path.points.ensureCapacity(points);
                 for (int j = 0; j < points; j++) {
-                    path.points.add(IOUtil.readVec3f(in));
+                    path.points.add(new org.joml.Vector3f(in.readFloat(), in.readFloat(), in.readFloat()));
                 }
                 map.put(uuid, path);
             }
-        } catch (Exception ignored) {
+        } catch (Exception e) {
+            FreeDrawPlugin.LOGGER.warning("Failed to migrate legacy data.bin: " + e.getMessage());
         }
+        return map;
     }
 
     public static <T> T loadConfig(Class<T> clazz, Path path) {

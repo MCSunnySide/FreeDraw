@@ -24,6 +24,9 @@ dependencies {
 
     // Same vector/quaternion math library that the Fabric mod uses (bundled by Minecraft there)
     implementation 'org.joml:joml:1.10.8'
+
+    // Embedded SQLite database for async path/action persistence.
+    implementation 'org.xerial:sqlite-jdbc:3.46.1.3'
 }
 
 java {

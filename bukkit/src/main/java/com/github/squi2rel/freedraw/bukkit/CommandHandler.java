@@ -1,10 +1,13 @@
 package com.github.squi2rel.freedraw.bukkit;
 
 import com.github.squi2rel.freedraw.bukkit.brush.BrushPath;
+import com.github.squi2rel.freedraw.bukkit.database.ActionLog;
 import com.github.squi2rel.freedraw.bukkit.network.PacketHandler;
 import net.md_5.bungee.api.ChatColor;
 import org.bukkit.Bukkit;
 import org.bukkit.DyeColor;
+import org.bukkit.Location;
+import org.bukkit.World;
 import org.bukkit.command.Command;
 import org.bukkit.command.CommandExecutor;
 import org.bukkit.command.CommandSender;
@@ -17,10 +20,11 @@ import java.util.List;
 import java.util.Locale;
 import java.util.Map;
 import java.util.UUID;
+import java.util.concurrent.CompletableFuture;
 
 /**
  * /drawcolor - set your drawing color (mirrors the Fabric mod's command).
- * /freedraw   - admin commands: reload, save, clear.
+ * /freedraw   - admin commands: reload, save, clear, rollback.
  */
 public class CommandHandler implements CommandExecutor, TabCompleter {
     public static final CommandHandler INSTANCE = new CommandHandler();
@@ -92,16 +96,165 @@ public class CommandHandler implements CommandExecutor, TabCompleter {
                 DataHolder.config.paths = new HashMap<>();
                 DataHolder.paths = new RegionManager(DataHolder.config.broadcastRange);
                 DataHolder.players.clear();
+                // Async: remove all paths from storage.
+                for (UUID uuid : old.keySet()) {
+                    DataHolder.db.deletePath(uuid);
+                }
                 sender.sendMessage(ChatColor.GREEN + "Cleared " + old.size() + " paths.");
             }
-            default -> {
-                sender.sendMessage(ChatColor.RED + "Usage: /freedraw <reload|save|clear [confirm]>");
-            }
+            case "rollback" -> rollback(sender, args);
+            default -> sender.sendMessage(ChatColor.RED + "Usage: /freedraw <reload|save|clear [confirm]|rollback [player] [time] [radius]>");
         }
         return true;
     }
 
-    // --- helpers ---
+    // --- rollback (CoreProtect-style) ---
+
+    /**
+     * Usage:
+     *   /freedraw rollback [player] [time] [radius]
+     * e.g. /freedraw rollback uoqoerhew 2h 50  - undo uoqoerhew's actions in the last 2h within 50 blocks
+     *      /freedraw rollback 30m              - undo everyone's actions in the last 30 minutes (no radius)
+     *      /freedraw rollback 1d 100           - undo everyone's actions in the last day within 100 blocks of self
+     *
+     * DRAW  actions are undone by deleting the path.
+     * ERASE actions are undone by restoring the path (full data was stored).
+     */
+    private void rollback(CommandSender sender, String[] args) {
+        UUID targetPlayer = null;
+        long sinceTs = 0;
+        double radius = Double.NaN;
+        double centerX = 0, centerZ = 0;
+
+        // Parse flexible args: optional player name first, then optional time, then optional radius.
+        List<String> rest = new ArrayList<>();
+        int argIdx = 1;
+        boolean playerMatched = false;
+        while (argIdx < args.length) {
+            String arg = args[argIdx];
+            if (!playerMatched && arg.length() <= 16 && isPlayerName(arg)) {
+                @SuppressWarnings("deprecation")
+                org.bukkit.OfflinePlayer op = Bukkit.getOfflinePlayer(arg);
+                targetPlayer = op.getUniqueId();
+                playerMatched = true;
+            } else if (sinceTs == 0 && isTime(arg)) {
+                sinceTs = parseTime(arg);
+            } else if (Double.isNaN(radius) && isRadius(arg)) {
+                radius = Double.parseDouble(arg);
+            } else {
+                rest.add(arg);
+            }
+            argIdx++;
+        }
+
+        if (sender instanceof Player p) {
+            centerX = p.getLocation().getX();
+            centerZ = p.getLocation().getZ();
+        }
+        World world = sender instanceof Player p2 ? p2.getWorld() : null;
+
+        sender.sendMessage(ChatColor.YELLOW + "Querying FreeDraw action log...");
+
+        CompletableFuture<List<ActionLog>> future = DataHolder.db.queryActions(
+                targetPlayer, sinceTs, world != null ? world.getName() : null, centerX, centerZ, radius);
+
+        future.whenComplete((logs, err) -> {
+            if (err != null) {
+                sender.sendMessage(ChatColor.RED + "Rollback query failed: " + err.getMessage());
+                return;
+            }
+            if (logs == null || logs.isEmpty()) {
+                sender.sendMessage(ChatColor.RED + "No matching actions found.");
+                return;
+            }
+            // Apply on the main thread.
+            Bukkit.getScheduler().runTask(FreeDrawPlugin.instance, () -> applyRollback(sender, logs));
+        });
+    }
+
+    private void applyRollback(CommandSender sender, List<ActionLog> logs) {
+        int undone = 0;
+        List<Long> ids = new ArrayList<>();
+        for (ActionLog log : logs) {
+            try {
+                if (log.type == ActionLog.Type.DRAW) {
+                    // Undo a draw: delete the path everywhere.
+                    BrushPath path = DataHolder.config.paths.remove(log.pathUuid);
+                    if (path != null) {
+                        DataHolder.paths.remove(path);
+                        broadcastRemove(path);
+                    }
+                    DataHolder.db.deletePath(log.pathUuid);
+                } else {
+                    // Undo an erase: restore the path from stored data.
+                    if (log.pathData == null) continue;
+                    BrushPath path = com.github.squi2rel.freedraw.bukkit.util.PathCodec.decode(log.pathUuid, log.pathData);
+                    DataHolder.config.paths.put(path.uuid, path);
+                    DataHolder.paths.insert(path);
+                    DataHolder.db.savePath(path);
+                    broadcastCreate(path);
+                }
+                ids.add(log.id);
+                undone++;
+            } catch (Exception e) {
+                FreeDrawPlugin.LOGGER.warning("Rollback action " + log.id + " failed: " + e.getMessage());
+            }
+        }
+        if (!ids.isEmpty()) {
+            DataHolder.db.markRolledBack(ids);
+        }
+        sender.sendMessage(ChatColor.GREEN + "Rolled back " + undone + " actions (" + logs.size() + " matched).");
+    }
+
+    private void broadcastRemove(BrushPath path) {
+        for (Player p : Bukkit.getOnlinePlayers()) {
+            if (!p.getWorld().getName().equals(path.world)) continue;
+            PacketHandler.sendTo(p, PacketHandler.removePath(path.uuid));
+        }
+    }
+
+    private void broadcastCreate(BrushPath path) {
+        for (Player p : Bukkit.getOnlinePlayers()) {
+            if (!p.getWorld().getName().equals(path.world)) continue;
+            Location loc = p.getLocation();
+            double dist = loc.distanceSquared(new Location(loc.getWorld(), path.offset.x, path.offset.y, path.offset.z));
+            if (dist <= (double) DataHolder.config.broadcastRange * DataHolder.config.broadcastRange) {
+                PacketHandler.sendTo(p, PacketHandler.createPath(path));
+                PacketHandler.sendTo(p, PacketHandler.addPoints(path));
+            }
+        }
+    }
+
+    // --- arg parsing helpers ---
+
+    private static boolean isPlayerName(String arg) {
+        return Bukkit.getPlayerExact(arg) != null || Bukkit.getOfflinePlayer(arg).hasPlayedBefore();
+    }
+
+    private static boolean isTime(String arg) {
+        if (arg.startsWith("#")) return arg.length() > 1 && arg.substring(1).chars().allMatch(Character::isDigit);
+        if (!arg.matches("\\d+[smhd]")) return false;
+        return true;
+    }
+
+    private static long parseTime(String arg) {
+        long now = System.currentTimeMillis();
+        if (arg.startsWith("#")) return now - 0; // id-based not used here
+        long value = Long.parseLong(arg.substring(0, arg.length() - 1));
+        return switch (arg.charAt(arg.length() - 1)) {
+            case 's' -> now - value * 1000L;
+            case 'm' -> now - value * 60_000L;
+            case 'h' -> now - value * 3_600_000L;
+            case 'd' -> now - value * 86_400_000L;
+            default -> now;
+        };
+    }
+
+    private static boolean isRadius(String arg) {
+        return arg.matches("\\d{1,4}");
+    }
+
+    // --- existing helpers ---
 
     private static DyeColor getDyeColor(String name) {
         for (DyeColor dye : DyeColor.values()) {
@@ -171,11 +324,23 @@ public class CommandHandler implements CommandExecutor, TabCompleter {
         } else if (command.getName().equalsIgnoreCase("freedraw")) {
             if (args.length == 1) {
                 String prefix = args[0].toLowerCase(Locale.ROOT);
-                for (String sub : new String[]{"reload", "save", "clear"}) {
+                for (String sub : new String[]{"reload", "save", "clear", "rollback"}) {
                     if (sub.startsWith(prefix)) suggestions.add(sub);
                 }
             } else if (args.length == 2 && args[0].equalsIgnoreCase("clear")) {
                 suggestions.add("confirm");
+            } else if (args.length >= 2 && args[0].equalsIgnoreCase("rollback")) {
+                if (args.length == 2) {
+                    String prefix = args[1].toLowerCase(Locale.ROOT);
+                    for (Player p : Bukkit.getOnlinePlayers()) {
+                        if (p.getName().toLowerCase(Locale.ROOT).startsWith(prefix)) suggestions.add(p.getName());
+                    }
+                    for (String t : new String[]{"30s", "10m", "1h", "6h", "24h", "7d"}) {
+                        if (t.startsWith(prefix)) suggestions.add(t);
+                    }
+                    if (prefix.isEmpty() || "50".startsWith(prefix)) suggestions.add("50");
+                    if (prefix.isEmpty() || "100".startsWith(prefix)) suggestions.add("100");
+                }
             }
         }
         return suggestions;

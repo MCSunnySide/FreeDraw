@@ -14,13 +14,19 @@ commands:
     permission: freedraw.drawcolor
   freedraw:
     description: FreeDraw admin commands
-    usage: /freedraw <reload|save|clear [confirm]>
+    usage: /freedraw <reload|save|clear [confirm]|rollback [player] [time] [radius]>
     permission: freedraw.admin
 
 permissions:
+  freedraw.draw:
+    description: Allows drawing with the FreeDraw brush
+    default: true
+  freedraw.erase:
+    description: Allows erasing FreeDraw drawings
+    default: true
   freedraw.drawcolor:
     description: Allows using /drawcolor
     default: true
   freedraw.admin:
-    description: Allows using /freedraw admin commands
+    description: Allows using /freedraw admin commands (including rollback)
     default: op

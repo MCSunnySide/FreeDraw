@@ -4,6 +4,7 @@ import com.github.squi2rel.freedraw.bukkit.DataHolder;
 import com.github.squi2rel.freedraw.bukkit.FreeDrawPlugin;
 import com.github.squi2rel.freedraw.bukkit.ServerConfig;
 import com.github.squi2rel.freedraw.bukkit.brush.BrushPath;
+import com.github.squi2rel.freedraw.bukkit.database.ActionLog;
 import org.bukkit.Location;
 import org.bukkit.entity.Player;
 import org.joml.Vector3f;
@@ -27,6 +28,7 @@ public class PacketHandler {
         switch (type) {
             case CONFIG -> DataHolder.players.put(player.getUniqueId(), IOUtil.readString(buf, 16));
             case NEW_PATH -> {
+                if (!player.hasPermission("freedraw.draw")) return;
                 UUID old = IOUtil.readUUID(buf);
                 UUID uuid = UUID.randomUUID();
                 BrushPath path = new BrushPath(uuid, player.getWorld().getName(), IOUtil.readVec3d(buf), buf.readInt());
@@ -34,11 +36,15 @@ public class PacketHandler {
                 sendTo(player, newPath(old, uuid, path.color));
             }
             case REMOVE_PATH -> {
+                if (!player.hasPermission("freedraw.erase")) return;
                 UUID uuid = IOUtil.readUUID(buf);
                 BrushPath path = config.paths.remove(uuid);
                 if (path == null) return;
                 paths.remove(path);
                 sendTo(player, removePath(uuid));
+                // Async: log the erase (with full path data so it can be restored) and drop it from storage.
+                DataHolder.db.logAction(ActionLog.erase(path, player.getUniqueId(), player.getName()));
+                DataHolder.db.deletePath(uuid);
                 FreeDrawPlugin.LOGGER.info(String.format("Player %s removed %d points with %s", player.getName(), path.size, path));
             }
             case ADD_POINTS -> {
@@ -71,6 +77,9 @@ public class PacketHandler {
                     }
                     path.stop();
                     paths.insert(path);
+                    // Async: persist the finalized path and log the DRAW action.
+                    DataHolder.db.savePath(path);
+                    DataHolder.db.logAction(ActionLog.draw(path, player.getUniqueId(), player.getName()));
                     FreeDrawPlugin.LOGGER.info(String.format("Player %s created %d points with %s", player.getName(), path.size, path));
                 }
                 int length = buf.readerIndex() - index;
