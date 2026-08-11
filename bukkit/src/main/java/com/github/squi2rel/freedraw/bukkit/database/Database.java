@@ -220,6 +220,30 @@ public class Database implements AutoCloseable {
         });
     }
 
+    /** Async: clear the rolled_back flag (used by /freedraw redo so the action can be rolled back again). */
+    public void markNotRolledBack(List<Long> ids) {
+        submit(() -> {
+            try (PreparedStatement ps = conn.prepareStatement("UPDATE actions SET rolled_back=0 WHERE id=?")) {
+                for (long id : ids) {
+                    ps.setLong(1, id);
+                    ps.addBatch();
+                }
+                ps.executeBatch();
+            } catch (SQLException e) {
+                FreeDrawPlugin.LOGGER.warning("Failed to clear rolled back: " + e.getMessage());
+            }
+        });
+    }
+
+    /**
+     * Async: query rolled-back action logs (for /freedraw redo).
+     * Same filters as {@link #queryActions} but matches {@code rolled_back=1}.
+     */
+    public CompletableFuture<List<ActionLog>> queryRolledBackActions(UUID playerUuid, long sinceTs, String world,
+                                                                     double centerX, double centerZ, double radius) {
+        return queryActionsInternal(playerUuid, sinceTs, world, centerX, centerZ, radius, true);
+    }
+
     /**
      * Async: query action logs.
      *
@@ -230,15 +254,22 @@ public class Database implements AutoCloseable {
      */
     public CompletableFuture<List<ActionLog>> queryActions(UUID playerUuid, long sinceTs, String world,
                                                            double centerX, double centerZ, double radius) {
+        return queryActionsInternal(playerUuid, sinceTs, world, centerX, centerZ, radius, false);
+    }
+
+    private CompletableFuture<List<ActionLog>> queryActionsInternal(UUID playerUuid, long sinceTs, String world,
+                                                                    double centerX, double centerZ, double radius,
+                                                                    boolean rolledBackOnly) {
         CompletableFuture<List<ActionLog>> future = new CompletableFuture<>();
         submit(() -> {
             try {
                 StringBuilder sql = new StringBuilder("""
                         SELECT id, ts, player_uuid, player_name, action, world, path_uuid,
                                min_x, min_y, min_z, max_x, max_y, max_z, color, point_count, path_data, rolled_back
-                        FROM actions WHERE rolled_back=0
+                        FROM actions WHERE rolled_back=?
                         """);
                 List<Object> args = new ArrayList<>();
+                args.add(rolledBackOnly ? 1 : 0);
                 if (playerUuid != null) {
                     sql.append(" AND player_uuid=?");
                     args.add(playerUuid.toString());

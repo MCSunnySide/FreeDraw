@@ -103,8 +103,9 @@ public class CommandHandler implements CommandExecutor, TabCompleter {
                 sender.sendMessage(ChatColor.GREEN + "Cleared " + old.size() + " paths.");
             }
             case "rollback" -> rollback(sender, args);
+            case "redo" -> redo(sender, args);
             case "lookup" -> lookup(sender, args);
-            default -> sender.sendMessage(ChatColor.RED + "Usage: /freedraw <reload|save|clear [confirm]|rollback [player] [time] [radius]|lookup [player] [time] [radius]>");
+            default -> sender.sendMessage(ChatColor.RED + "Usage: /freedraw <reload|save|clear [confirm]|rollback [player] [time] [radius]|redo [player] [time] [radius]|lookup [player] [time] [radius]>");
         }
         return true;
     }
@@ -179,7 +180,8 @@ public class CommandHandler implements CommandExecutor, TabCompleter {
         for (ActionLog log : logs) {
             try {
                 if (log.type == ActionLog.Type.DRAW) {
-                    // Undo a draw: delete the path everywhere.
+                    // Undo a draw: delete the path everywhere. pathData stays in the action
+                    // so /freedraw redo can restore it later.
                     BrushPath path = DataHolder.config.paths.remove(log.pathUuid);
                     if (path != null) {
                         DataHolder.paths.remove(path);
@@ -204,7 +206,97 @@ public class CommandHandler implements CommandExecutor, TabCompleter {
         if (!ids.isEmpty()) {
             DataHolder.db.markRolledBack(ids);
         }
-        sender.sendMessage(ChatColor.GREEN + "Rolled back " + undone + " actions (" + logs.size() + " matched).");
+        sender.sendMessage(ChatColor.GREEN + "Rolled back " + undone + " actions (" + logs.size() + " matched). Use /freedraw redo to undo this rollback.");
+    }
+
+    // --- redo (undo a rollback) ---
+
+    /**
+     * Usage (same filters as rollback):
+     *   /freedraw redo [player] [time] [radius]
+     * Re-applies actions that were previously rolled back (rolled_back=1), then
+     * clears their rolled_back flag so they can be rolled back again:
+     *   redo of a rolled-back DRAW  → restores the deleted path (from the action's stored data).
+     *   redo of a rolled-back ERASE → deletes the restored path again.
+     */
+    private void redo(CommandSender sender, String[] args) {
+        UUID targetPlayer = null;
+        long sinceTs = 0;
+        double radius = Double.NaN;
+        double centerX = 0, centerZ = 0;
+
+        int argIdx = 1;
+        boolean playerMatched = false;
+        while (argIdx < args.length) {
+            String arg = args[argIdx];
+            if (!playerMatched && arg.length() <= 16 && isPlayerName(arg)) {
+                @SuppressWarnings("deprecation")
+                org.bukkit.OfflinePlayer op = Bukkit.getOfflinePlayer(arg);
+                targetPlayer = op.getUniqueId();
+                playerMatched = true;
+            } else if (sinceTs == 0 && isTime(arg)) {
+                sinceTs = parseTime(arg);
+            } else if (Double.isNaN(radius) && isRadius(arg)) {
+                radius = Double.parseDouble(arg);
+            }
+            argIdx++;
+        }
+
+        if (sender instanceof Player p) {
+            centerX = p.getLocation().getX();
+            centerZ = p.getLocation().getZ();
+        }
+        World world = sender instanceof Player p2 ? p2.getWorld() : null;
+
+        sender.sendMessage(ChatColor.YELLOW + "Querying rolled-back actions...");
+
+        DataHolder.db.queryRolledBackActions(targetPlayer, sinceTs, world != null ? world.getName() : null, centerX, centerZ, radius)
+                .whenComplete((logs, err) -> {
+                    if (err != null) {
+                        sender.sendMessage(ChatColor.RED + "Redo query failed: " + err.getMessage());
+                        return;
+                    }
+                    if (logs == null || logs.isEmpty()) {
+                        sender.sendMessage(ChatColor.RED + "No rolled-back actions found matching those filters.");
+                        return;
+                    }
+                    Bukkit.getScheduler().runTask(FreeDrawPlugin.instance, () -> applyRedo(sender, logs));
+                });
+    }
+
+    private void applyRedo(CommandSender sender, List<ActionLog> logs) {
+        int redone = 0;
+        List<Long> ids = new ArrayList<>();
+        for (ActionLog log : logs) {
+            try {
+                if (log.type == ActionLog.Type.DRAW) {
+                    // Re-apply the draw: restore the path that rollback deleted.
+                    if (log.pathData == null) continue;
+                    BrushPath path = com.github.squi2rel.freedraw.bukkit.util.PathCodec.decode(log.pathUuid, log.pathData);
+                    DataHolder.config.paths.put(path.uuid, path);
+                    DataHolder.paths.insert(path);
+                    DataHolder.db.savePath(path);
+                    broadcastCreate(path);
+                } else {
+                    // Re-apply the erase: delete the path rollback restored.
+                    BrushPath path = DataHolder.config.paths.remove(log.pathUuid);
+                    if (path != null) {
+                        DataHolder.paths.remove(path);
+                        broadcastRemove(path);
+                    }
+                    DataHolder.db.deletePath(log.pathUuid);
+                }
+                ids.add(log.id);
+                redone++;
+            } catch (Exception e) {
+                FreeDrawPlugin.LOGGER.warning("Redo action " + log.id + " failed: " + e.getMessage());
+            }
+        }
+        if (!ids.isEmpty()) {
+            // rolled_back -> 0 so the action can be rolled back again.
+            DataHolder.db.markNotRolledBack(ids);
+        }
+        sender.sendMessage(ChatColor.GREEN + "Redid " + redone + " actions (" + logs.size() + " matched).");
     }
 
     private void broadcastRemove(BrushPath path) {
@@ -390,12 +482,12 @@ public class CommandHandler implements CommandExecutor, TabCompleter {
         } else if (command.getName().equalsIgnoreCase("freedraw")) {
             if (args.length == 1) {
                 String prefix = args[0].toLowerCase(Locale.ROOT);
-                for (String sub : new String[]{"reload", "save", "clear", "rollback", "lookup"}) {
+                for (String sub : new String[]{"reload", "save", "clear", "rollback", "redo", "lookup"}) {
                     if (sub.startsWith(prefix)) suggestions.add(sub);
                 }
             } else if (args.length == 2 && args[0].equalsIgnoreCase("clear")) {
                 suggestions.add("confirm");
-            } else if (args.length >= 2 && (args[0].equalsIgnoreCase("rollback") || args[0].equalsIgnoreCase("lookup"))) {
+            } else if (args.length >= 2 && (args[0].equalsIgnoreCase("rollback") || args[0].equalsIgnoreCase("redo") || args[0].equalsIgnoreCase("lookup"))) {
                 completeRollbackArgs(sender, args, suggestions);
             }
         }
@@ -403,7 +495,7 @@ public class CommandHandler implements CommandExecutor, TabCompleter {
     }
 
     /**
-     * Tab completion for {@code /freedraw rollback|lookup [player] [time] [radius]}.
+     * Tab completion for {@code /freedraw rollback|redo|lookup [player] [time] [radius]}.
      * The three parameters can be given in any order; we track which kinds have
      * already been supplied and only suggest the remaining kinds.
      */

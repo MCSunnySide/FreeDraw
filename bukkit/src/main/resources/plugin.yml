@@ -14,7 +14,7 @@ commands:
     permission: freedraw.drawcolor
   freedraw:
     description: FreeDraw admin commands
-    usage: /freedraw <reload|save|clear [confirm]|rollback [player] [time] [radius]|lookup [player] [time] [radius]>
+    usage: /freedraw <reload|save|clear [confirm]|rollback [player] [time] [radius]|redo [player] [time] [radius]|lookup [player] [time] [radius]>
     permission: freedraw.admin
 
 permissions:

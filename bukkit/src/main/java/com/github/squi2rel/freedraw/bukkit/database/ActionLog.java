@@ -41,6 +41,8 @@ public class ActionLog {
     public static ActionLog draw(BrushPath path, UUID playerUuid, String playerName) {
         ActionLog log = base(path, playerUuid, playerName);
         log.type = Type.DRAW;
+        // Store the full path data for BOTH types: rollback deletes it, redo restores it.
+        log.pathData = com.github.squi2rel.freedraw.bukkit.util.PathCodec.encode(path);
         return log;
     }
 
