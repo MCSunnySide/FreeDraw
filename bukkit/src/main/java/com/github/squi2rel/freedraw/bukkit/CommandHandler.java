@@ -103,7 +103,8 @@ public class CommandHandler implements CommandExecutor, TabCompleter {
                 sender.sendMessage(ChatColor.GREEN + "Cleared " + old.size() + " paths.");
             }
             case "rollback" -> rollback(sender, args);
-            default -> sender.sendMessage(ChatColor.RED + "Usage: /freedraw <reload|save|clear [confirm]|rollback [player] [time] [radius]>");
+            case "lookup" -> lookup(sender, args);
+            default -> sender.sendMessage(ChatColor.RED + "Usage: /freedraw <reload|save|clear [confirm]|rollback [player] [time] [radius]|lookup [player] [time] [radius]>");
         }
         return true;
     }
@@ -225,6 +226,71 @@ public class CommandHandler implements CommandExecutor, TabCompleter {
         }
     }
 
+    // --- lookup (CoreProtect-style read-only query) ---
+
+    /**
+     * Usage (same filters as rollback, but read-only):
+     *   /freedraw lookup [player] [time] [radius]
+     * e.g. /freedraw lookup uoqoerhew 2h 50
+     *      /freedraw lookup 30m
+     */
+    private void lookup(CommandSender sender, String[] args) {
+        UUID targetPlayer = null;
+        long sinceTs = 0;
+        double radius = Double.NaN;
+        double centerX = 0, centerZ = 0;
+
+        int argIdx = 1;
+        boolean playerMatched = false;
+        while (argIdx < args.length) {
+            String arg = args[argIdx];
+            if (!playerMatched && arg.length() <= 16 && isPlayerName(arg)) {
+                @SuppressWarnings("deprecation")
+                org.bukkit.OfflinePlayer op = Bukkit.getOfflinePlayer(arg);
+                targetPlayer = op.getUniqueId();
+                playerMatched = true;
+            } else if (sinceTs == 0 && isTime(arg)) {
+                sinceTs = parseTime(arg);
+            } else if (Double.isNaN(radius) && isRadius(arg)) {
+                radius = Double.parseDouble(arg);
+            }
+            argIdx++;
+        }
+
+        if (sender instanceof Player p) {
+            centerX = p.getLocation().getX();
+            centerZ = p.getLocation().getZ();
+        }
+        World world = sender instanceof Player p2 ? p2.getWorld() : null;
+
+        sender.sendMessage(ChatColor.YELLOW + "Querying FreeDraw action log...");
+
+        DataHolder.db.queryActions(targetPlayer, sinceTs, world != null ? world.getName() : null, centerX, centerZ, radius)
+                .whenComplete((logs, err) -> {
+                    if (err != null) {
+                        sender.sendMessage(ChatColor.RED + "Lookup failed: " + err.getMessage());
+                        return;
+                    }
+                    if (logs == null || logs.isEmpty()) {
+                        sender.sendMessage(ChatColor.RED + "No matching actions found.");
+                        return;
+                    }
+                    int limit = Math.min(logs.size(), 20);
+                    sender.sendMessage(ChatColor.GOLD + "FreeDraw actions (showing " + limit + "/" + logs.size() + "):");
+                    for (int i = 0; i < limit; i++) {
+                        ActionLog log = logs.get(i);
+                        String time = new java.text.SimpleDateFormat("yyyy-MM-dd HH:mm").format(new java.util.Date(log.timestamp));
+                        String player = log.playerName != null ? log.playerName : (log.playerUuid != null ? log.playerUuid.toString().substring(0, 8) : "?");
+                        String action = log.type == ActionLog.Type.DRAW ? ChatColor.GREEN + "draw" : ChatColor.RED + "erase";
+                        sender.sendMessage(ChatColor.GRAY + "#" + log.id + " " + time
+                                + ChatColor.WHITE + " " + player
+                                + " " + action
+                                + ChatColor.WHITE + " in " + log.world
+                                + " (" + log.pointCount + " pts, " + String.format("#%06X", log.color & 0xFFFFFF) + ")");
+                    }
+                });
+    }
+
     // --- arg parsing helpers ---
 
     private static boolean isPlayerName(String arg) {
@@ -324,25 +390,56 @@ public class CommandHandler implements CommandExecutor, TabCompleter {
         } else if (command.getName().equalsIgnoreCase("freedraw")) {
             if (args.length == 1) {
                 String prefix = args[0].toLowerCase(Locale.ROOT);
-                for (String sub : new String[]{"reload", "save", "clear", "rollback"}) {
+                for (String sub : new String[]{"reload", "save", "clear", "rollback", "lookup"}) {
                     if (sub.startsWith(prefix)) suggestions.add(sub);
                 }
             } else if (args.length == 2 && args[0].equalsIgnoreCase("clear")) {
                 suggestions.add("confirm");
-            } else if (args.length >= 2 && args[0].equalsIgnoreCase("rollback")) {
-                if (args.length == 2) {
-                    String prefix = args[1].toLowerCase(Locale.ROOT);
-                    for (Player p : Bukkit.getOnlinePlayers()) {
-                        if (p.getName().toLowerCase(Locale.ROOT).startsWith(prefix)) suggestions.add(p.getName());
-                    }
-                    for (String t : new String[]{"30s", "10m", "1h", "6h", "24h", "7d"}) {
-                        if (t.startsWith(prefix)) suggestions.add(t);
-                    }
-                    if (prefix.isEmpty() || "50".startsWith(prefix)) suggestions.add("50");
-                    if (prefix.isEmpty() || "100".startsWith(prefix)) suggestions.add("100");
-                }
+            } else if (args.length >= 2 && (args[0].equalsIgnoreCase("rollback") || args[0].equalsIgnoreCase("lookup"))) {
+                completeRollbackArgs(sender, args, suggestions);
             }
         }
         return suggestions;
+    }
+
+    /**
+     * Tab completion for {@code /freedraw rollback|lookup [player] [time] [radius]}.
+     * The three parameters can be given in any order; we track which kinds have
+     * already been supplied and only suggest the remaining kinds.
+     */
+    private void completeRollbackArgs(CommandSender sender, String[] args, List<String> suggestions) {
+        boolean hasPlayer = false;
+        boolean hasTime = false;
+        boolean hasRadius = false;
+        String prefix = args[args.length - 1].toLowerCase(Locale.ROOT);
+
+        // Classify the already-typed parameters (excluding the one being completed).
+        for (int i = 1; i < args.length - 1; i++) {
+            String arg = args[i];
+            if (!hasPlayer && isPlayerName(arg)) hasPlayer = true;
+            else if (!hasTime && isTime(arg)) hasTime = true;
+            else if (!hasRadius && isRadius(arg)) hasRadius = true;
+        }
+
+        // Player names (only if a player param hasn't been supplied yet).
+        if (!hasPlayer) {
+            for (Player p : Bukkit.getOnlinePlayers()) {
+                if (p.getName().toLowerCase(Locale.ROOT).startsWith(prefix)) suggestions.add(p.getName());
+            }
+        }
+
+        // Time values (only if a time param hasn't been supplied yet).
+        if (!hasTime) {
+            for (String t : new String[]{"30s", "10m", "1h", "6h", "24h", "7d"}) {
+                if (t.startsWith(prefix)) suggestions.add(t);
+            }
+        }
+
+        // Radius (only if a radius param hasn't been supplied yet).
+        if (!hasRadius) {
+            for (String r : new String[]{"25", "50", "100", "200"}) {
+                if (r.startsWith(prefix)) suggestions.add(r);
+            }
+        }
     }
 }
