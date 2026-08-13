@@ -27,7 +27,7 @@ Bukkit/Paper:
 | Side | Requirement |
 | --- | --- |
 | Server | Paper or Spigot **1.21.x** (Java 21) |
-| Client | Fabric **1.21.4** with the FreeDraw mod of the same `major.minor` version (currently **1.0.x**) |
+| Client | Fabric **1.21.11** with the FreeDraw mod of the same `major.minor` version (currently **1.0.x**) |
 
 The client checks that the server's reported version shares its `major.minor`,
 so keep `plugin_version` in `gradle.properties` aligned with the mod version.
