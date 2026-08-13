@@ -63,6 +63,7 @@ public class PathRenderer {
                 .withDepthTestFunction(DepthTestFunction.LEQUAL_DEPTH_TEST)
                 .withCull(false)
                 .build();
+        IrisCompat.register(pipeline);
 
         GpuSampler sampler = RenderSystem.getSamplerCache().get(AddressMode.CLAMP_TO_EDGE, AddressMode.CLAMP_TO_EDGE, FilterMode.LINEAR, FilterMode.NEAREST, true);
         RenderSetup setup = RenderSetup.builder(pipeline)
