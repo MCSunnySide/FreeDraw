@@ -26,7 +26,19 @@ public class PacketHandler {
     public static void handle(Player player, PacketBuf buf) {
         int type = buf.readUnsignedByte();
         switch (type) {
-            case CONFIG -> DataHolder.players.put(player.getUniqueId(), IOUtil.readString(buf, 16));
+            case CONFIG -> {
+                String version = IOUtil.readString(buf, 16);
+                // Answer a NEW client's CONFIG (its in-PLAY request or first reply) with a
+                // full config push. The initial push from onPlayerJoin can be dropped when
+                // it lands before the client finished the login/config phase (slow first
+                // joins with VR/shaders, proxy channel propagation), which would otherwise
+                // leave the client with connected=false for the whole session. Returning
+                // null from put means the player was not in the map yet.
+                if (DataHolder.players.put(player.getUniqueId(), version) == null) {
+                    sendTo(player, config(FreeDrawPlugin.version, config));
+                    sendTo(player, maxPoints(config.maxPoints));
+                }
+            }
             case NEW_PATH -> {
                 if (!player.hasPermission("freedraw.draw")) return;
                 UUID old = IOUtil.readUUID(buf);

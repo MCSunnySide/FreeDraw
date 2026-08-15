@@ -10,6 +10,8 @@ import org.bukkit.event.player.PlayerQuitEvent;
 import org.bukkit.plugin.java.JavaPlugin;
 import org.bukkit.plugin.messaging.PluginMessageListener;
 
+import java.util.UUID;
+import java.util.concurrent.atomic.AtomicInteger;
 import java.util.logging.Logger;
 
 /**
@@ -74,15 +76,27 @@ public class FreeDrawPlugin extends JavaPlugin implements Listener, PluginMessag
     @EventHandler
     public void onPlayerJoin(PlayerJoinEvent event) {
         Player player = event.getPlayer();
-        // Delay the CONFIG send: on proxied networks (Velocity/BungeeCord) the player first joins
-        // a lobby and is then transferred to this backend. Sending plugin-message data immediately
-        // on join can arrive before the proxy finished propagating the channel registration, which
-        // truncates/corrupts the S2C packet. Waiting a few ticks lets the proxy settle.
-        getServer().getScheduler().runTaskLater(this, () -> {
-            if (player.isOnline() && player.isValid()) {
-                DataHolder.onPlayerJoin(player);
+        UUID uuid = player.getUniqueId();
+        // The initial CONFIG push can be dropped when it lands before the client
+        // finished the login/config phase (slow first joins with VR + shaders, or
+        // proxy channel registration still propagating), leaving the client stuck
+        // with connected=false for the whole session. The client answers every
+        // CONFIG push with its own CONFIG (which registers it in DataHolder.players),
+        // so re-push every 60 ticks until it answers, leaves, or we hit the cap.
+        // Purely server-side recovery, no client changes required.
+        // 60 ticks = 3 seconds per attempt; 60 attempts x 3s + 2s initial delay
+        // means we give up after roughly 3 minutes.
+        final AtomicInteger attempts = new AtomicInteger();
+        final int[] taskId = {-1};
+        taskId[0] = getServer().getScheduler().runTaskTimer(this, () -> {
+            if (!player.isOnline() || !player.isValid()
+                    || DataHolder.players.containsKey(uuid)
+                    || attempts.incrementAndGet() > 60) {
+                getServer().getScheduler().cancelTask(taskId[0]);
+                return;
             }
-        }, 40L);
+            DataHolder.onPlayerJoin(player);
+        }, 40L, 60L).getTaskId();
     }
 
     @EventHandler
